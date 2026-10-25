@@ -44,7 +44,7 @@ input:hover,select:hover{background:rgba(255,255,255,.94);border-color:#aebcda}
 input:focus,select:focus{outline:none;border-color:#5c91f7;background:#fff;box-shadow:0 0 0 4px rgba(23,105,232,.12),0 5px 16px rgba(23,105,232,.07);transform:translateY(-1px)}
 
 input[type=file]{font-size:12px;padding:8px;background:#f9fbff}
-input[type=range]{padding:0;min-height:22px;accent-color:var(--blue);border:0}
+input[type=range]{padding:0;min-height:22px;accent-color:var(--blue);border:0}\ninput[type=number]{appearance:textfield}\nbutton:disabled{opacity:.65;cursor:wait;transform:none;filter:none}\n#removeBgStatus{min-height:16px}
 .upload-help,.hint{font-size:11px;line-height:1.45;color:var(--muted);margin-top:5px}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .section-title{font-size:15px;font-weight:800;margin:17px 0 10px;padding-top:14px;border-top:1px solid #e8ecf3}
@@ -156,6 +156,12 @@ canvas{display:block;width:100%;height:auto}
       </div>
     </div>
 
+    <div class="section-title">Photo frame size</div>
+    <div class="two-col">
+      <div class="field"><label for="frameWidth">Frame width (px)</label><input id="frameWidth" type="number" min="160" max="480" step="10" value="348" inputmode="numeric"></div>
+      <div class="field"><label for="frameHeight">Frame height (px)</label><input id="frameHeight" type="number" min="160" max="404" step="10" value="404" inputmode="numeric"></div>
+    </div>
+    <div class="hint" id="frameHint">Single-student portrait frame. Group mode allows a wider frame.</div>
     <div class="section-title">Photo adjustment</div>
     <div class="field">
       <label class="range-title" for="zoom"><span>Zoom</span><span id="zoomValue">1.00×</span></label>
@@ -177,23 +183,27 @@ canvas{display:block;width:100%;height:auto}
       <button class="btn-green" id="downloadJpg" type="button">⬇ Download JPG</button>
       <button class="btn-blue" id="downloadPng" type="button">⬇ Download PNG</button>
     </div>
-    <p class="hint">No database or login. Photos stay in your browser. Downloads are rendered at 3072 × 4608 px for sharp sharing and printing.</p>
+    <p class="hint">No database or login. Photos stay in your browser. WhatsApp Status export: 1080 × 1920 px (9:16). The original artwork is kept undistorted and centered.</p>
   </section>
 
   <section class="panel preview-panel" aria-label="Poster preview">
     <div class="preview-heading">
       <h2>Live poster preview</h2>
-      <span class="tag">3072 × 4608 PX</span>
+      <span class="tag">WHATSAPP STATUS · 1080 × 1920 PX</span>
     </div>
-    <div class="poster-wrap"><canvas id="poster" width="1024" height="1536"></canvas></div>
+    <div class="poster-wrap"><canvas id="poster" width="1080" height="1920"></canvas></div>
     <p class="preview-note">Only one poster is shown. Switch between single student and group item above; the photo frame adjusts automatically.</p>
   </section>
 </main>
 <script>
 (() => {
   'use strict';
-  // Draw in logical template coordinates; export backing bitmap at 3× resolution.
-  const PREVIEW_W=1024, PREVIEW_H=1536, EXPORT_SCALE=3;
+  // 9:16 WhatsApp Status output. Keep the supplied 2:3 artwork undistorted.
+  // Existing poster coordinates remain unchanged and are scaled into the status canvas.
+  const DESIGN_W=1024, DESIGN_H=1536;
+  const PREVIEW_W=1080, PREVIEW_H=1920, EXPORT_SCALE=1;
+  const FIT_SCALE=PREVIEW_W/DESIGN_W;
+  const DESIGN_OFFSET_Y=(PREVIEW_H-DESIGN_H*FIT_SCALE)/2;
   const W=PREVIEW_W, H=PREVIEW_H;
   const canvas=document.getElementById('poster');
   canvas.width=PREVIEW_W*EXPORT_SCALE;
@@ -206,13 +216,17 @@ canvas{display:block;width:100%;height:auto}
   let uploadedPhoto=null;
   let mode='single';
   let zoom=1, shiftX=0, shiftY=0;
+  let frameW=348, frameH=404;
 
   function text(id){return $(id).value.trim();}
   function gradeValue(){
     return text('grade')==='custom' ? (text('gradeCustom') || 'GRADE') : text('grade');
   }
   function positionValue(){
-    return text('position')==='custom' ? (text('positionCustom') || 'POSITION') : text('position');
+    const raw=text('position')==='custom' ? (text('positionCustom') || 'POSITION') : text('position');
+    const cleaned=raw.trim().replace(/\s+/g,' ');
+    const ordinal=cleaned.match(/^(\d+)\s*(st|nd|rd|th)$/i);
+    return ordinal ? ordinal[1]+ordinal[2].toLowerCase() : cleaned;
   }
   function fitText(str,x,y,maxWidth,startSize,minSize,color,weight='800'){
     str=String(str||'');
@@ -233,11 +247,30 @@ canvas{display:block;width:100%;height:auto}
     ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);
     ctx.arcTo(x,y,x+w,y,r);ctx.closePath();ctx.clip();
   }
+  function currentFrameLimits(){
+    return mode==='group'
+      ? {maxW:480,maxH:404,defaultW:480,defaultH:404}
+      : {maxW:348,maxH:404,defaultW:348,defaultH:404};
+  }
+  function syncFrameInputs(resetToMode=false){
+    const limits=currentFrameLimits();
+    $('frameWidth').max=limits.maxW;
+    $('frameHeight').max=limits.maxH;
+    if(resetToMode){frameW=limits.defaultW;frameH=limits.defaultH;}
+    frameW=Math.max(160,Math.min(limits.maxW,Number(frameW)||limits.defaultW));
+    frameH=Math.max(160,Math.min(limits.maxH,Number(frameH)||limits.defaultH));
+    $('frameWidth').value=frameW;
+    $('frameHeight').value=frameH;
+    $('frameHint').textContent=mode==='group'
+      ? 'Group mode: wide landscape frame. Adjust within the gold photo border.'
+      : 'Single mode: portrait frame. Adjust width and height within the gold photo border.';
+  }
   function drawPhoto(){
-    // The group photo uses a wider crop. Single-student portrait is narrower and centered.
-    const r=mode==='group'
-      ? {x:272,y:608,w:480,h:404}
-      : {x:338,y:608,w:348,h:404};
+    const limits=currentFrameLimits();
+    frameW=Math.max(160,Math.min(limits.maxW,Number(frameW)||limits.defaultW));
+    frameH=Math.max(160,Math.min(limits.maxH,Number(frameH)||limits.defaultH));
+    const area={x:512-limits.maxW/2,y:608,w:limits.maxW,h:limits.maxH};
+    const r={x:area.x+(area.w-frameW)/2,y:area.y+(area.h-frameH)/2,w:frameW,h:frameH};
     ctx.save();roundedClip(r.x,r.y,r.w,r.h,9);
     if(uploadedPhoto){
       const scale=Math.max(r.w/uploadedPhoto.width,r.h/uploadedPhoto.height)*zoom;
@@ -261,28 +294,55 @@ canvas{display:block;width:100%;height:auto}
 
     // Item appears only once, in the blue title ribbon.
     fitText(item.toLocaleUpperCase(),512,535,670,46,20,'#ffffff');
-    // Grade value sits in the centre of the left medallion; the fixed ribbon already says GRADE.
-    fitText(grade.toLocaleUpperCase(),142,795,150,49,24,'#111111');
-    // Render ordinal suffix in lowercase and smaller raised type: 1st, 2nd, 3rd.
+    // Premium grade lettering: dark ink, warm gold outline and a subtle shadow.
+    ctx.save();
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    let gradeSize=49;
+    ctx.font=`900 ${gradeSize}px "Noto Sans Malayalam", "Noto Sans", "Segoe UI", Arial, sans-serif`;
+    while(ctx.measureText(grade.toLocaleUpperCase()).width>150 && gradeSize>24){
+      gradeSize-=2;
+      ctx.font=`900 ${gradeSize}px "Noto Sans Malayalam", "Noto Sans", "Segoe UI", Arial, sans-serif`;
+    }
+    ctx.lineJoin='round';ctx.lineWidth=3.5;
+    ctx.strokeStyle='#fff0a0';ctx.shadowColor='rgba(90,48,0,.65)';
+    ctx.shadowBlur=5;ctx.shadowOffsetY=2;
+    ctx.strokeText(grade.toLocaleUpperCase(),142,795,150);
+    ctx.fillStyle='#17120a';ctx.shadowBlur=0;ctx.shadowOffsetY=0;
+    ctx.fillText(grade.toLocaleUpperCase(),142,795,150);
+    ctx.restore();
+
+    // Ordinal suffix is smaller and raised; custom "1 st" is normalized to "1st".
     const ordinal=position.match(/^(\d+)(st|nd|rd|th)$/i);
     if(ordinal){
-      const number=ordinal[1];
-      const suffix=ordinal[2].toLowerCase();
-      ctx.textAlign='center';
-      ctx.textBaseline='middle';
-      ctx.fillStyle='#17120a';
+      const number=ordinal[1], suffix=ordinal[2].toLowerCase();
+      ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillStyle='#201300';ctx.strokeStyle='#fff0a0';ctx.lineJoin='round';
+      ctx.shadowColor='rgba(104,57,0,.55)';ctx.shadowBlur=4;ctx.shadowOffsetY=1;
       ctx.font='900 42px "Noto Sans", "Segoe UI", Arial, sans-serif';
       const numberWidth=ctx.measureText(number).width;
-      ctx.font='800 17px "Noto Sans", "Segoe UI", Arial, sans-serif';
+      ctx.font='900 17px "Noto Sans", "Segoe UI", Arial, sans-serif';
       const suffixWidth=ctx.measureText(suffix).width;
-      const total=numberWidth+suffixWidth-2;
-      const startX=884-total/2;
+      const startX=884-(numberWidth+suffixWidth-2)/2;
+      ctx.lineWidth=2.2;
       ctx.font='900 42px "Noto Sans", "Segoe UI", Arial, sans-serif';
+      ctx.strokeText(number,startX+numberWidth/2,780);
       ctx.fillText(number,startX+numberWidth/2,780);
-      ctx.font='800 17px "Noto Sans", "Segoe UI", Arial, sans-serif';
-      ctx.fillText(suffix,startX+numberWidth+suffixWidth/2-2,765);
+      ctx.font='900 17px "Noto Sans", "Segoe UI", Arial, sans-serif';
+      ctx.strokeText(suffix,startX+numberWidth+suffixWidth/2-2,764);
+      ctx.fillText(suffix,startX+numberWidth+suffixWidth/2-2,764);
+      ctx.restore();
     }else{
-      fitText(position.toLocaleUpperCase(),884,780,150,36,15,'#17120a');
+      ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
+      let posSize=38;
+      ctx.font=`900 ${posSize}px "Noto Sans", "Segoe UI", Arial, sans-serif`;
+      while(ctx.measureText(position.toLocaleUpperCase()).width>150 && posSize>16){
+        posSize-=2;ctx.font=`900 ${posSize}px "Noto Sans", "Segoe UI", Arial, sans-serif`;
+      }
+      ctx.fillStyle='#201300';ctx.strokeStyle='#fff0a0';ctx.lineWidth=2;
+      ctx.shadowColor='rgba(104,57,0,.55)';ctx.shadowBlur=4;
+      ctx.strokeText(position.toLocaleUpperCase(),884,780,150);
+      ctx.fillText(position.toLocaleUpperCase(),884,780,150);
+      ctx.restore();
     }
 
     // Name/group name and school are in the cream panel. Do not repeat item below.
@@ -292,10 +352,16 @@ canvas{display:block;width:100%;height:auto}
   }
   function render(){
     if(!background.complete || !background.naturalWidth)return;
-    ctx.clearRect(0,0,W,H);
-    ctx.drawImage(background,0,0,PREVIEW_W,PREVIEW_H);
+    ctx.save();
+    ctx.setTransform(EXPORT_SCALE,0,0,EXPORT_SCALE,0,0);
+    ctx.fillStyle='#050505';
+    ctx.fillRect(0,0,W,H);
+    ctx.translate(0,DESIGN_OFFSET_Y);
+    ctx.scale(FIT_SCALE,FIT_SCALE);
+    ctx.drawImage(background,0,0,DESIGN_W,DESIGN_H);
     drawPhoto();
     drawPosterText();
+    ctx.restore();
     $('zoomValue').textContent=zoom.toFixed(2)+'×';
   }
   function resetCrop(){
@@ -310,6 +376,7 @@ canvas{display:block;width:100%;height:auto}
     $('nameLabel').textContent=mode==='group'?'Group name':'Student name';
     $('name').placeholder=mode==='group'?'e.g. Ramu and Party':'Enter student name';
     $('photoLabel').textContent=mode==='group'?'group':'student';
+    syncFrameInputs(true);
     resetCrop();
   }
   function updateCustomFields(){
@@ -337,14 +404,25 @@ canvas{display:block;width:100%;height:auto}
   ['name','school','item','gradeCustom','positionCustom'].forEach(id=>$(id).addEventListener('input',render));
   $('grade').addEventListener('change',updateCustomFields);
   $('position').addEventListener('change',updateCustomFields);
+  $('frameWidth').addEventListener('change',()=>{
+    const limits=currentFrameLimits();
+    frameW=Math.max(160,Math.min(limits.maxW,Number(text('frameWidth'))||limits.defaultW));
+    syncFrameInputs(false);render();
+  });
+  $('frameHeight').addEventListener('change',()=>{
+    const limits=currentFrameLimits();
+    frameH=Math.max(160,Math.min(limits.maxH,Number(text('frameHeight'))||limits.defaultH));
+    syncFrameInputs(false);render();
+  });
   $('zoom').addEventListener('input',()=>{zoom=Number(text('zoom'));render();});
   $('offsetX').addEventListener('input',()=>{shiftX=Number(text('offsetX'));render();});
   $('offsetY').addEventListener('input',()=>{shiftY=Number(text('offsetY'));render();});
-  $('resetCrop').addEventListener('click',resetCrop);
+    $('resetCrop').addEventListener('click',resetCrop);
   $('clearForm').addEventListener('click',()=>{
     $('name').value='';$('item').value='';$('grade').value='A';$('position').value='1st';
     $('gradeCustom').value='';$('positionCustom').value='';
     $('photo').value='';uploadedPhoto=null;
+    syncFrameInputs(true);
     updateCustomFields();resetCrop();
   });
   function download(format){
@@ -384,6 +462,7 @@ canvas{display:block;width:100%;height:auto}
   }
   $('downloadJpg').addEventListener('click',()=>download('jpg'));
   $('downloadPng').addEventListener('click',()=>download('png'));
+  syncFrameInputs(true);
 })();
 </script>
 </body>
